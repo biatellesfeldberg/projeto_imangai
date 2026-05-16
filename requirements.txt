@@ -3,3 +3,4 @@ opencv-python-headless
 requests
 beautifulsoup4
 geopy
+openpyxl

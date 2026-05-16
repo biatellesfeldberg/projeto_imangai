@@ -45,4 +45,42 @@ Projeto de web scraping para encontrar na internet possíveis casas à venda nas
 - **Limitações:** muitos portais usam **Cloudflare** ou anti-bot; em IP residencial o `requests` pode funcionar — se não, será preciso trocar só a camada de download (ex. navegador automatizado) mantendo o filtro e o CSV.
 - **Uso responsável:** respeitar termos de uso dos sites, robots.txt e carga dos serviços (Nominatim exige uso moderado; há pausa configurável entre chamadas).
 
-Próximos passos possíveis: enriquecer parsers por domínio, deduplicação por endereço normalizado e exportação direta para planilha (o CSV já abre em Excel/LibreOffice).
+## Passo 3 — planilha legível para leigos
+
+### 3.1 Objetivo
+
+- Transformar o **`saida/casas_filtradas.csv`** (Passo 2) num arquivo **Excel `.xlsx`** fácil de abrir no Excel ou no Numbers, com colunas em português e formatação pensada para leitura rápida.
+
+### 3.2 Arquivo e saída
+
+- O script **`gerar_planilha.py`** lê o CSV e grava por padrão **`planilhas_geradas/planilha_casas.xlsx`** (a pasta **`planilhas_geradas/`** é criada automaticamente).
+- **Cada execução substitui** o `.xlsx` de destino se já existir (não há histórico automático de versões anteriores). Feche o arquivo no Excel/Numbers antes de gerar de novo para evitar erro ao salvar.
+
+### 3.3 Colunas da planilha
+
+- **Índice** (1, 2, 3, …).
+- **Link do anúncio** (com hyperlink clicável quando a URL é válida).
+- **Endereço**.
+- **Telefone da imobiliária**.
+- **Telefone do vendedor** (vazio quando não houver no CSV).
+- Todas as linhas de dados do CSV entram na planilha (o CSV pode trazer outras colunas técnicas; só essas cinco são expostas de forma simples).
+
+### 3.4 Aparência
+
+- Cabeçalho com fundo azul-escuro e texto branco, **bordas** discretas nas células, **linhas zebradas** no miolo, índice centralizado, links em azul sublinhado e altura de linha adequada para texto quebrado.
+
+### 3.5 Como rodar
+
+- Dependência: **`openpyxl`** (já listado em **`requirements.txt`**).
+- Após o Passo 2, na raiz do projeto:
+  - `python gerar_planilha.py`
+- Caminhos opcionais:
+  - `python gerar_planilha.py --entrada saida/casas_filtradas.csv --saida planilhas_geradas/outro_nome.xlsx`
+
+### 3.6 Ordem sugerida do fluxo completo
+
+1. Ajustar imagens e, se precisar, regenerar o filtro (`filtro_regioes.py` / imagens em `regioes_interesse`).
+2. Rodar **`coletor_casas.py`** com o JSON de configuração → **CSV** em **`saida/`**.
+3. Rodar **`gerar_planilha.py`** → **planilha** em **`planilhas_geradas/`**.
+
+Próximos passos possíveis: enriquecer parsers por domínio no coletor e deduplicação por endereço normalizado.
