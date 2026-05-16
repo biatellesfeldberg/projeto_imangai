@@ -213,6 +213,27 @@ class FiltroRegioes:
                 reg.poligono.vertices_normalizados, bbox
             )
 
+    def aplicar_bbox_por_imagem(
+        self,
+        bbox_por_arquivo: dict[str, BoundingBox],
+        bbox_padrao: BoundingBox | None = None,
+    ) -> None:
+        """
+        Aplica um `BoundingBox` distinto por arquivo de imagem de origem (recomendado quando
+        cada captura de mapa tem zoom/posição diferentes). Chaves de `bbox_por_arquivo` devem
+        coincidir com `RegiaoDetectada.arquivo_origem` (nome do ficheiro).
+        """
+        for reg in self.regioes:
+            bbox = bbox_por_arquivo.get(reg.arquivo_origem) or bbox_padrao
+            if bbox is None:
+                raise ValueError(
+                    f"Sem BoundingBox para a imagem {reg.arquivo_origem!r}. "
+                    "Inclua essa chave em bbox_por_arquivo ou defina bounding_box como padrão."
+                )
+            reg.poligono.vertices_latlng = poligono_normalizado_para_latlng(
+                reg.poligono.vertices_normalizados, bbox
+            )
+
     def contem_coordenadas(self, latitude: float, longitude: float) -> bool:
         """Verdadeiro se o ponto cair em qualquer polígono (usa `vertices_latlng`)."""
         for reg in self.regioes:

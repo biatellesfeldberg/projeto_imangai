@@ -1,0 +1,48 @@
+{
+  "bounding_box": {
+    "sul": -23.56,
+    "oeste": -46.55,
+    "norte": -23.48,
+    "leste": -46.45
+  },
+  "bounding_boxes_por_imagem": {
+    "WhatsApp Image 2026-05-08 at 09.38.22.jpeg": {
+      "sul": -23.518,
+      "oeste": -46.53,
+      "norte": -23.498,
+      "leste": -46.508
+    },
+    "WhatsApp Image 2026-05-08 at 09.38.22 (1).jpeg": {
+      "sul": -23.542,
+      "oeste": -46.472,
+      "norte": -23.522,
+      "leste": -46.452
+    }
+  },
+  "arquivo_saida_csv": "saida/casas_filtradas.csv",
+  "filtro_json": null,
+  "regenerar_filtro_das_imagens": true,
+  "pasta_regioes_interesse": "regioes_interesse",
+  "queries_busca": [
+    "casa à venda vila patriarca são paulo",
+    "casa venda zona leste são paulo sobrado",
+    "casa à venda itaquera dom bosco",
+    "casa venda site:vivareal.com.br patriarca",
+    "casa venda site:zapimoveis.com.br itaquera",
+    "casa venda site:olx.com.br zona leste sp"
+  ],
+  "max_links_por_query": 10,
+  "google_cse_api_key": null,
+  "google_cse_cx": null,
+  "pausa_segundos_entre_requisicoes": 2.0,
+  "dominios_permitidos": [
+    "vivareal.com.br",
+    "zapimoveis.com.br",
+    "olx.com.br",
+    "imovelweb.com.br",
+    "chavesnamao.com.br",
+    "mercadolivre.com.br"
+  ],
+  "idioma_busca_ddg": "br-pt",
+  "timeout_http": 35
+}
