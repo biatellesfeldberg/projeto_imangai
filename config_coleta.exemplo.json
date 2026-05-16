@@ -44,5 +44,13 @@
     "mercadolivre.com.br"
   ],
   "idioma_busca_ddg": "br-pt",
-  "timeout_http": 35
+  "timeout_http": 35,
+  "urls_paginas_hub": [
+    "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/cidade-patriarca/casa_residencial/",
+    "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/itaquera/casa_residencial/"
+  ],
+  "expandir_hub_max_links": 80,
+  "usar_ddgs_api": true,
+  "usar_curl_cffi": true,
+  "curl_impersonate": "chrome"
 }

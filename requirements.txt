@@ -3,4 +3,7 @@ opencv-python-headless
 requests
 beautifulsoup4
 geopy
+ddgs
+typing-extensions
 openpyxl
+curl-cffi

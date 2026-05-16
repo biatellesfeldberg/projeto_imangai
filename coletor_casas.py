@@ -5,15 +5,11 @@ Coleta links de anúncios na web, extrai dados de páginas de imóveis e mantém
 anúncios que passam pelo filtro geográfico (`filtro_regioes.FiltroRegioes`).
 
 Dependências:
-    pip install requests beautifulsoup4 geopy
-
-Uso típico:
-    python coletor_casas.py --config config_coleta.exemplo.json
+    pip install requests beautifulsoup4 geopy ddgs typing-extensions curl-cffi
 
 Observações:
-    - Sites grandes costumam usar Cloudflare e podem bloquear IPs automatizados; em ambiente
-      resid/com cookies de navegador o `requests` pode funcionar. Caso contrário, adapte o fetch
-      (ex.: Playwright) mantendo a mesma interface de parsing.
+    - Sites grandes usam Cloudflare/WAF: o coletor tenta usar **curl-cffi** (fingerprint de navegador)
+      para reduzir HTTP 403. Se ainda bloquear, só navegador real (ex. Playwright) tende a passar.
     - O filtro espacial é estrito: sem coordenadas confiáveis na página nem geocodificação
       bem-sucedida dentro do polígono, o anúncio é descartado.
 """
@@ -28,10 +24,28 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
-from urllib.parse import parse_qs, unquote, urlparse
+from typing import Any, Iterable, Iterator
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
+
+try:
+    from curl_cffi.requests.exceptions import HTTPError as CffiHTTPError
+    from curl_cffi.requests.exceptions import RequestException as CffiRequestException
+
+    _ERROS_HTTP_SESSAO: tuple[type[BaseException], ...] = (
+        requests.RequestException,
+        CffiRequestException,
+        CffiHTTPError,
+    )
+except ImportError:
+    _ERROS_HTTP_SESSAO = (requests.RequestException,)
+
+_ERROS_HTTP_OU_JSON: tuple[type[BaseException], ...] = (
+    *_ERROS_HTTP_SESSAO,
+    json.JSONDecodeError,
+)
+
 from bs4 import BeautifulSoup
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 from geopy.geocoders import Nominatim
@@ -44,6 +58,7 @@ from filtro_regioes import (
 )
 
 LOG = logging.getLogger(__name__)
+
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -100,6 +115,15 @@ RE_M2 = re.compile(
     re.IGNORECASE,
 )
 
+# Parâmetros uddg= em qualquer HTML retornado pelo DuckDuckGo
+RE_UDDG_PARAM = re.compile(r"uddg=([^&\"'<>]+)", re.IGNORECASE)
+
+# Páginas de listagem conhecidas (regiões do projeto) — expandidas para links de anúncio
+URLS_HUB_PADRAO: list[str] = [
+    "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/cidade-patriarca/casa_residencial/",
+    "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/itaquera/casa_residencial/",
+]
+
 
 @dataclass
 class AnuncioCasa:
@@ -136,6 +160,11 @@ class ConfigColeta:
     dominios_permitidos: list[str] = field(default_factory=lambda: list(DOMINIOS_PADRAO_PORTAIS))
     idioma_busca_ddg: str = "br-pt"
     timeout_http: int = 35
+    urls_paginas_hub: list[str] = field(default_factory=list)
+    expandir_hub_max_links: int = 80
+    usar_ddgs_api: bool = True
+    usar_curl_cffi: bool = True
+    curl_impersonate: str = "chrome"
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> ConfigColeta:
@@ -159,6 +188,10 @@ class ConfigColeta:
                     norte=float(bb_raw["norte"]),
                     leste=float(bb_raw["leste"]),
                 )
+        if "urls_paginas_hub" in data and isinstance(data["urls_paginas_hub"], list):
+            urls_hub = [str(u) for u in data["urls_paginas_hub"]]
+        else:
+            urls_hub = list(URLS_HUB_PADRAO)
         return ConfigColeta(
             bounding_box=bbox,
             bounding_boxes_por_imagem=por_img,
@@ -183,12 +216,41 @@ class ConfigColeta:
             ),
             idioma_busca_ddg=str(data.get("idioma_busca_ddg", "br-pt")),
             timeout_http=int(data.get("timeout_http", 35)),
+            urls_paginas_hub=urls_hub,
+            expandir_hub_max_links=int(data.get("expandir_hub_max_links", 80)),
+            usar_ddgs_api=bool(data.get("usar_ddgs_api", True)),
+            usar_curl_cffi=bool(data.get("usar_curl_cffi", True)),
+            curl_impersonate=str(data.get("curl_impersonate", "chrome")),
         )
 
 
 def carregar_config(caminho: str | Path) -> ConfigColeta:
     raw = json.loads(Path(caminho).read_text(encoding="utf-8"))
     return ConfigColeta.from_dict(raw)
+
+
+def criar_sessao_http(config: ConfigColeta):
+    headers = {"User-Agent": config.user_agent, "Accept-Language": "pt-BR,pt;q=0.9"}
+    if config.usar_curl_cffi:
+        try:
+            from curl_cffi import requests as cf_requests
+
+            sess = cf_requests.Session(impersonate=config.curl_impersonate)
+            sess.headers.update(headers)
+            LOG.info(
+                "Sessão HTTP: curl-cffi (impersonate=%s).",
+                config.curl_impersonate,
+            )
+            return sess
+        except Exception as exc:
+            LOG.warning(
+                "curl-cffi indisponível (%s); usando requests puro (mais suscetível a 403).",
+                exc,
+            )
+    sessao = requests.Session()
+    sessao.headers.update(headers)
+    LOG.info("Sessão HTTP: requests.")
+    return sessao
 
 
 def montar_filtro(cfg: ConfigColeta, raiz_projeto: Path) -> FiltroRegioes:
@@ -212,41 +274,223 @@ def _filtrar_dominio(url: str, permitidos: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in permitidos)
 
 
-def extrair_links_duckduckgo(
-    sessao: requests.Session, query: str, max_links: int, kl: str
+def parece_url_anuncio_individual(url: str) -> bool:
+    """Identifica páginas de detalhe (não listagens só de bairro)."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    path = (p.path or "").lower()
+    if "vivareal.com.br" in host:
+        return "/imovel/venda/" in path
+    if "zapimoveis.com.br" in host:
+        return "/imovel/" in path and (
+            "venda" in path or "pra-venda" in path or "para-venda" in path
+        )
+    if "imovelweb.com.br" in host:
+        return "/imovel/" in path and len(path) > 24
+    if "chavesnamao.com.br" in host:
+        return "/imovel" in path
+    if "olx.com.br" in host:
+        return "/d/ad/" in path or "/vi/" in path or ("/d/" in path and path.count("/") >= 5)
+    if "mercadolivre.com.br" in host or "mercadolivre.com" in host:
+        upper = url.upper()
+        return "/p/" in path or "MLB-" in upper
+    return False
+
+
+def expandir_links_de_paginas_hub(
+    sessao: Any,
+    url_hub: str,
+    permitidos: list[str],
+    max_links: int,
+    timeout: int,
 ) -> list[str]:
-    """Busca HTML do DuckDuckGo (POST) e devolve URLs reais a partir dos redirects uddg=."""
-    links: list[str] = []
+    """Baixa página de listagem de um portal e extrai URLs de anúncios individuais."""
+    out: list[str] = []
+    try:
+        r = sessao.get(url_hub.strip(), timeout=timeout, allow_redirects=True)
+        if r.status_code != 200:
+            LOG.warning("Hub %s: HTTP %s", url_hub[:80], r.status_code)
+            return out
+        base_url = r.url
+        soup = BeautifulSoup(r.text, "html.parser")
+        vistos: set[str] = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href or href.startswith(("#", "javascript:")):
+                continue
+            absolute = urljoin(base_url, href)
+            absolute = absolute.split("#", 1)[0]
+            if not _filtrar_dominio(absolute, permitidos):
+                continue
+            if not parece_url_anuncio_individual(absolute):
+                continue
+            if absolute not in vistos:
+                vistos.add(absolute)
+                out.append(absolute)
+            if len(out) >= max_links:
+                break
+    except _ERROS_HTTP_SESSAO as e:
+        LOG.warning("Erro ao expandir hub %s: %s", url_hub[:80], e)
+    return out
+
+
+def _extrair_urls_do_html_via_regex_uddg(html: str) -> list[str]:
+    resultado: list[str] = []
+    for m in RE_UDDG_PARAM.finditer(html):
+        token = m.group(1).replace("&amp;", "&")
+        try:
+            cand = unquote(token)
+        except Exception:
+            cand = token
+        if cand.startswith("//"):
+            cand = "https:" + cand
+        if cand.startswith(("http://", "https://")) and cand not in resultado:
+            resultado.append(cand)
+    return resultado
+
+
+def extrair_links_ddgs_python(query: str, max_links: int, region: str) -> list[str]:
+    """Camada oficial moderna DuckDuckGo (pacote pip `ddgs`, sucessor do duckduckgo-search)."""
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS  # retrocompatível
+    except ImportError:
+        LOG.warning(
+            'Instale o cliente DDG: `pip install ddgs typing-extensions`.'
+        )
+        return []
+    cap = min(50, max(30, max_links * 5))
+    out: list[str] = []
+    try:
+        with DDGS() as ddgs:
+            kwargs: dict[str, Any] = {"max_results": cap}
+            if region:
+                kwargs["region"] = region
+            for item in ddgs.text(query, **kwargs):
+                u = item.get("href") or item.get("url")
+                if isinstance(u, str) and u.startswith("http"):
+                    if u not in out:
+                        out.append(u)
+                if len(out) >= cap:
+                    break
+    except Exception as e:
+        LOG.warning("duckduckgo_search (%r): %s", query, e)
+    return out
+
+
+def extrair_links_duckduckgo(
+    sessao: Any,
+    query: str,
+    max_links: int,
+    kl: str,
+    timeout: int,
+) -> list[str]:
+    """Varre HTML DuckDuckGo (POST html + lite) com seletores e regex sobre uddg=."""
+    limite_extra = max(max_links * 3, 30)
+    found: list[str] = []
+
+    def _append(u: str | None) -> None:
+        if (
+            u
+            and u.startswith("http")
+            and u not in found
+            and len(found) < limite_extra
+        ):
+            found.append(u)
+
     try:
         r = sessao.post(
             "https://html.duckduckgo.com/html/",
             data={"q": query, "b": "", "kl": kl},
-            timeout=35,
+            timeout=timeout,
         )
         r.raise_for_status()
-    except requests.RequestException as e:
-        LOG.warning("DuckDuckGo falhou para %r: %s", query, e)
+        corpo = r.text
+    except _ERROS_HTTP_SESSAO as e:
+        LOG.warning("DuckDuckGo HTML falhou para %r: %s", query, e)
+        corpo = ""
+
+    if corpo:
+        for u in _extrair_urls_do_html_via_regex_uddg(corpo):
+            _append(u)
+        soup = BeautifulSoup(corpo, "html.parser")
+        candidatos = [
+            *[a.get("href") or "" for a in soup.select("a.result__a")],
+            *[
+                a.get("href") or ""
+                for a in soup.select(
+                    '.result__title a, .result-title a, a.result-link, a[data-testid="result-title-a"]'
+                )
+            ],
+        ]
+        for href in candidatos:
+            resolved = _resolver_url_ddg(href)
+            _append(resolved)
+
+    # Versão lite (fallback)
+    try:
+        rl = sessao.get(
+            "https://lite.duckduckgo.com/lite/",
+            params={"q": query, "kl": kl},
+            timeout=timeout,
+        )
+        if rl.status_code == 200:
+            for u in _extrair_urls_do_html_via_regex_uddg(rl.text):
+                _append(u)
+            sp = BeautifulSoup(rl.text, "html.parser")
+            for row in sp.select("table tr td a"):
+                hu = row.get("href") or ""
+                resolved = _resolver_url_ddg(hu)
+                _append(resolved)
+    except _ERROS_HTTP_SESSAO as e:
+        LOG.debug("DDG lite falhou (%r): %s", query, e)
+
+    return found[:limite_extra]
+
+
+def extrair_links_bing(
+    sessao: Any, query: str, max_links: int, timeout: int
+) -> list[str]:
+    links: list[str] = []
+    try:
+        r = sessao.get(
+            "https://www.bing.com/search",
+            params={"q": query},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+    except _ERROS_HTTP_SESSAO as e:
+        LOG.warning("Bing falhou (%r): %s", query, e)
         return links
-
-    soup = BeautifulSoup(r.text, "html.parser")
-    candidatos: list[str] = []
-    for a in soup.select("a.result__a"):
-        href = a.get("href") or ""
-        candidatos.append(href)
-    if not candidatos:
-        for a in soup.select(".result__title a, .result-title a, a.result-link"):
-            href = a.get("href") or ""
-            candidatos.append(href)
-
-    for href in candidatos:
-        if len(links) >= max_links:
-            break
-        real = _resolver_url_ddg(href)
-        if not real:
-            continue
-        if real not in links:
-            links.append(real)
-    return links
+    raw = r.text
+    lowered = raw.lower()
+    if "turnstile" in lowered or "class=\"captcha\"" in lowered.replace("'", '"'):
+        LOG.info(
+            "Bing retornou desafio (captcha) para %r; ignorando resultados Bing nesta rodada.",
+            query[:50],
+        )
+        return links
+    soup = BeautifulSoup(raw, "html.parser")
+    for sel in ("li.b_algo h2 a", "h2.b_title a"):
+        for a in soup.select(sel):
+            href = (a.get("href") or "").strip()
+            if not href.startswith("http"):
+                href = urljoin(r.url, href)
+            parsed = urlparse(href)
+            if parsed.scheme not in ("http", "https"):
+                continue
+            if "bing.com" in (parsed.hostname or ""):
+                continue
+            if href not in links:
+                links.append(href)
+            if len(links) >= max_links * 3:
+                return links[: max_links * 3]
+    return links[: max_links * 3]
 
 
 def _resolver_url_ddg(href: str) -> str | None:
@@ -266,7 +510,7 @@ def _resolver_url_ddg(href: str) -> str | None:
 
 
 def extrair_links_google_cse(
-    sessao: requests.Session,
+    sessao: Any,
     query: str,
     api_key: str,
     cx: str,
@@ -291,7 +535,7 @@ def extrair_links_google_cse(
             )
             r.raise_for_status()
             payload = r.json()
-        except (requests.RequestException, json.JSONDecodeError) as e:
+        except _ERROS_HTTP_OU_JSON as e:
             LOG.warning("Google CSE falhou (%s): %s", query, e)
             break
         items = payload.get("items") or []
@@ -306,17 +550,68 @@ def extrair_links_google_cse(
         start += 10
     return links
 
-def coletar_urls(config: ConfigColeta, sessao: requests.Session) -> list[str]:
+
+def coletar_urls(config: ConfigColeta, sessao: Any) -> list[str]:
     vistos: set[str] = set()
     resultado: list[str] = []
-    for q in config.queries_busca:
-        lds = extrair_links_duckduckgo(
-            sessao, q, config.max_links_por_query, config.idioma_busca_ddg
-        )
-        for u in lds:
+
+    def add_batch(origem: Iterable[str]) -> tuple[int, int]:
+        antes = len(resultado)
+        for u in origem:
             if u not in vistos and _filtrar_dominio(u, config.dominios_permitidos):
                 vistos.add(u)
                 resultado.append(u)
+        return len(resultado) - antes, len(resultado)
+
+    for hub in config.urls_paginas_hub:
+        uhub = hub.strip()
+        if not uhub:
+            continue
+        sub = expandir_links_de_paginas_hub(
+            sessao,
+            uhub,
+            config.dominios_permitidos,
+            config.expandir_hub_max_links,
+            config.timeout_http,
+        )
+        novas, tot = add_batch(sub)
+        LOG.info(
+            "Expansão de listagem (%s…) → %s novas URLs (total candidatas=%s).",
+            uhub[:72],
+            novas,
+            tot,
+        )
+        time.sleep(config.pausa_segundos_entre_requisicoes)
+
+    for q in config.queries_busca:
+        bloco: list[str] = []
+        if config.usar_ddgs_api:
+            bloco.extend(
+                extrair_links_ddgs_python(
+                    q, config.max_links_por_query, config.idioma_busca_ddg
+                )
+            )
+        bloco.extend(
+            extrair_links_duckduckgo(
+                sessao,
+                q,
+                config.max_links_por_query,
+                config.idioma_busca_ddg,
+                config.timeout_http,
+            )
+        )
+        bloco.extend(
+            extrair_links_bing(
+                sessao, q, config.max_links_por_query, config.timeout_http
+            )
+        )
+        novas, tot = add_batch(bloco)
+        LOG.info(
+            "Busca %r → %s nova(s) URL; total candidatas=%s.",
+            q[:76],
+            novas,
+            tot,
+        )
         time.sleep(config.pausa_segundos_entre_requisicoes)
         if config.google_cse_api_key and config.google_cse_cx:
             gcs = extrair_links_google_cse(
@@ -326,10 +621,13 @@ def coletar_urls(config: ConfigColeta, sessao: requests.Session) -> list[str]:
                 config.google_cse_cx,
                 config.max_links_por_query,
             )
-            for u in gcs:
-                if u not in vistos and _filtrar_dominio(u, config.dominios_permitidos):
-                    vistos.add(u)
-                    resultado.append(u)
+            novas_g, tot = add_batch(gcs)
+            LOG.info(
+                "Google CSE (%s…) → %s novas URLs; total=%s.",
+                q[:52],
+                novas_g,
+                tot,
+            )
             time.sleep(config.pausa_segundos_entre_requisicoes)
     return resultado
 
@@ -473,7 +771,7 @@ def extrair_titulo(soup: BeautifulSoup) -> str:
 
 def processar_url_anuncio(
     url: str,
-    sessao: requests.Session,
+    sessao: Any,
     filtro: FiltroRegioes,
     geolocator: Nominatim,
     config: ConfigColeta,
@@ -481,7 +779,7 @@ def processar_url_anuncio(
     try:
         r = sessao.get(url, timeout=config.timeout_http, allow_redirects=True)
         r.raise_for_status()
-    except requests.RequestException as e:
+    except _ERROS_HTTP_SESSAO as e:
         LOG.warning("GET %s: %s", url, e)
         return None
 
@@ -578,8 +876,8 @@ def rodar_coleta(config: ConfigColeta, raiz_projeto: Path | None = None) -> Path
     filtro = montar_filtro(config, raiz)
     LOG.info("Filtro carregado: %s polígonos.", len(filtro.regioes))
 
-    sessao = requests.Session()
-    sessao.headers.update({"User-Agent": config.user_agent, "Accept-Language": "pt-BR,pt;q=0.9"})
+    sessao = criar_sessao_http(config)
+
 
     urls = coletar_urls(config, sessao)
     LOG.info("%s URLs candidatas após busca.", len(urls))

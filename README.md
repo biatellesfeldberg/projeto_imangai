@@ -23,9 +23,11 @@ Projeto de web scraping para encontrar na internet possíveis casas à venda nas
 
 ### 2.2 Busca ampla (não só um portal)
 
-- **DuckDuckGo (HTML)** obtém links a partir das **`queries_busca`** (livres; podem incluir `site:domínio` ou termos amplos).
-- Opcionalmente, com **`google_cse_api_key`** e **`google_cse_cx`**, o mesmo conjunto de queries é repetido na **API Custom Search**, o que ajuda a cobrir mais resultados indexados respeitando a política do Google.
-- **`dominios_permitidos`** reduz ruído (lista vazia = aceitar qualquer domínio retornado pela busca).
+- **`urls_paginas_hub`** (no JSON ou padrões internos): URLs de **listagens** (ex.: Viva Real por bairro) são baixadas e o código **extrai links de páginas de anúncio** (`expandir_hub_max_links` por hub). Bom quando o portal entrega âncoras no HTML.
+- **`queries_busca`** alimentam, em paralelo: pacote **`ddgs`** (cliente atual do DuckDuckGo), **`html.duckduckgo.com` + `lite`** (com parsing por seletores e por regex **`uddg=`**) e **`Bing`** (quando não há página de captcha).
+- Opcionalmente, com **`google_cse_api_key`** e **`google_cse_cx`**, repetimos a mesma consulta na **Custom Search**.
+- **`usar_ddgs_api`**: se `false`, pula apenas a camada `ddgs` (mantém DuckDuckGo HTML/Bing/hubs).
+- **`dominios_permitidos`**: lista vazia = aceitar qualquer domínio retornado.
 
 ### 2.3 Critérios de imóvel e filtro espacial
 
@@ -82,5 +84,32 @@ Projeto de web scraping para encontrar na internet possíveis casas à venda nas
 1. Ajustar imagens e, se precisar, regenerar o filtro (`filtro_regioes.py` / imagens em `regioes_interesse`).
 2. Rodar **`coletor_casas.py`** com o JSON de configuração → **CSV** em **`saida/`**.
 3. Rodar **`gerar_planilha.py`** → **planilha** em **`planilhas_geradas/`**.
+
+## Problemas comuns — OpenCV (`cv2`) no Anaconda (macOS)
+
+Se ao rodar `coletor_casas.py` aparecer erro do tipo **`Library not loaded: ... libgdk_pixbuf-2.0.0.dylib`** ao importar `cv2`, o ambiente Anaconda está usando um pacote OpenCV compilado contra bibliotecas gráficas (GTK) que não estão instaladas.
+
+Faça assim **no mesmo ambiente em que você roda o projeto** (por exemplo `(base)`):
+
+1. Remover pacotes OpenCV que costumam conflitar:
+
+   ```bash
+   conda remove -y opencv py-opencv libopencv 2>/dev/null || true
+   pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless
+   ```
+
+2. Instalar de novo apenas a versão **headless** (recomendada neste projeto, sem dependência de interface gráfica):
+
+   ```bash
+   pip install opencv-python-headless
+   ```
+
+3. Confirmar:
+
+   ```bash
+   python3 -c "import cv2; print(cv2.__version__)"
+   ```
+
+Se ainda falhar, uma alternativa é usar o **Python do sistema** ou um **`venv`** limpo só para este projeto (sem mixes `conda install`/`pip install` duplicados de OpenCV).
 
 Próximos passos possíveis: enriquecer parsers por domínio no coletor e deduplicação por endereço normalizado.
