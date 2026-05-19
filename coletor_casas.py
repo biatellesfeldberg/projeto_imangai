@@ -114,15 +114,64 @@ RE_M2 = re.compile(
     r"(\d{1,3}(?:\.\d{3})*|\d+)\s*(?:m²|m2|metros?\s*quadrados?)",
     re.IGNORECASE,
 )
+# Metragem em slug de URL (ex.: ...-100m2-venda-...)
+RE_M2_SLUG = re.compile(r"(\d{1,4})m2(?:-|$)", re.IGNORECASE)
 
 # Parâmetros uddg= em qualquer HTML retornado pelo DuckDuckGo
 RE_UDDG_PARAM = re.compile(r"uddg=([^&\"'<>]+)", re.IGNORECASE)
+
+# Links de anúncio embutidos em HTML/JSON (portais atuais)
+RE_URL_VIVAREAL = re.compile(
+    r"https?://(?:www\.)?vivareal\.com\.br/imovel/[a-z0-9\-]+-id-\d+/?",
+    re.IGNORECASE,
+)
+RE_PATH_VIVAREAL = re.compile(
+    r"/imovel/[a-z0-9\-]+-id-\d+/?",
+    re.IGNORECASE,
+)
+RE_URL_ZAP = re.compile(
+    r"https?://(?:www\.)?zapimoveis\.com\.br/imovel/[a-z0-9\-]+-id-[\w\d]+/?",
+    re.IGNORECASE,
+)
+RE_PATH_ZAP = re.compile(
+    r"/imovel/[a-z0-9\-]+-id-[\w\d]+/?",
+    re.IGNORECASE,
+)
+RE_URL_OLX = re.compile(
+    r"https?://[a-z0-9.-]*olx\.com\.br/(?:d/)?(?:ad|vi)/[a-z0-9\-]+/?",
+    re.IGNORECASE,
+)
+RE_URL_IMOVELWEB = re.compile(
+    r"https?://(?:www\.)?imovelweb\.com\.br/imovel/[^\"'\s<>?#]+",
+    re.IGNORECASE,
+)
+RE_NEXT_DATA = re.compile(
+    r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Páginas de listagem conhecidas (regiões do projeto) — expandidas para links de anúncio
 URLS_HUB_PADRAO: list[str] = [
     "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/cidade-patriarca/casa_residencial/",
     "https://www.vivareal.com.br/venda/sp/sao-paulo/zona-leste/itaquera/casa_residencial/",
 ]
+
+# Bairros alinhados aos hubs do projeto (fallback textual se polígono da imagem não calibrar)
+BAIRROS_INTERESSE_PADRAO: tuple[str, ...] = (
+    "patriarca",
+    "cidade patriarca",
+    "vila patriarca",
+    "itaquera",
+    "dom bosco",
+    "cidade líder",
+    "cidade lider",
+    "jardim helena",
+    "vila carmosina",
+    "são mateus",
+    "sao mateus",
+    "artur alvim",
+    "zona leste",
+)
 
 
 @dataclass
@@ -165,6 +214,15 @@ class ConfigColeta:
     usar_ddgs_api: bool = True
     usar_curl_cffi: bool = True
     curl_impersonate: str = "chrome"
+    aquecer_sessao: bool = True
+    somente_venda: bool = True
+    priorizar_vivareal: bool = True
+    usar_busca_web: bool = False
+    filtro_geo: str = "poligono_ou_bbox"
+    bairros_interesse: list[str] = field(
+        default_factory=lambda: list(BAIRROS_INTERESSE_PADRAO)
+    )
+    max_anuncios_processar: int = 50
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> ConfigColeta:
@@ -221,6 +279,15 @@ class ConfigColeta:
             usar_ddgs_api=bool(data.get("usar_ddgs_api", True)),
             usar_curl_cffi=bool(data.get("usar_curl_cffi", True)),
             curl_impersonate=str(data.get("curl_impersonate", "chrome")),
+            aquecer_sessao=bool(data.get("aquecer_sessao", True)),
+            somente_venda=bool(data.get("somente_venda", True)),
+            priorizar_vivareal=bool(data.get("priorizar_vivareal", True)),
+            usar_busca_web=bool(data.get("usar_busca_web", False)),
+            filtro_geo=str(data.get("filtro_geo", "poligono_ou_bbox")),
+            bairros_interesse=list(
+                data.get("bairros_interesse", BAIRROS_INTERESSE_PADRAO)
+            ),
+            max_anuncios_processar=int(data.get("max_anuncios_processar", 50)),
         )
 
 
@@ -253,6 +320,20 @@ def criar_sessao_http(config: ConfigColeta):
     return sessao
 
 
+def aquecer_sessao_portais(sessao: Any, config: ConfigColeta) -> None:
+    """Visita a home dos portais para obter cookies antes de listagens/anúncios."""
+    if not config.aquecer_sessao:
+        return
+    portais = ["https://www.vivareal.com.br/"]
+    if not config.priorizar_vivareal:
+        portais.append("https://www.zapimoveis.com.br/")
+    for url in portais:
+        try:
+            sessao.get(url, timeout=min(config.timeout_http, 25), allow_redirects=True)
+        except _ERROS_HTTP_SESSAO as e:
+            LOG.debug("Aquecimento %s: %s", url, e)
+
+
 def montar_filtro(cfg: ConfigColeta, raiz_projeto: Path) -> FiltroRegioes:
     if cfg.regenerar_filtro_das_imagens or not cfg.filtro_json:
         pasta = raiz_projeto / cfg.pasta_regioes_interesse
@@ -274,8 +355,27 @@ def _filtrar_dominio(url: str, permitidos: list[str]) -> bool:
     return any(host == d or host.endswith("." + d) for d in permitidos)
 
 
+def normalizar_url_anuncio(url: str) -> str:
+    """Remove parâmetros de rastreio e fragmentos; mantém path canônico."""
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return url
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return url
+    path = p.path or ""
+    if path and not path.endswith("/"):
+        host = (p.hostname or "").lower()
+        if any(d in host for d in ("vivareal.com.br", "zapimoveis.com.br", "imovelweb.com.br")):
+            path = path + "/"
+    limpo = p._replace(path=path, query="", fragment="")
+    return limpo.geturl()
+
+
 def parece_url_anuncio_individual(url: str) -> bool:
     """Identifica páginas de detalhe (não listagens só de bairro)."""
+    url = normalizar_url_anuncio(url)
     try:
         p = urlparse(url)
     except ValueError:
@@ -283,13 +383,18 @@ def parece_url_anuncio_individual(url: str) -> bool:
     host = (p.hostname or "").lower()
     path = (p.path or "").lower()
     if "vivareal.com.br" in host:
-        return "/imovel/venda/" in path
+        # Antigo: /imovel/venda/... | Atual: /imovel/casa-...-venda-RS...-id-123456/
+        if "/imovel/venda/" in path:
+            return True
+        return path.startswith("/imovel/") and "-id-" in path
     if "zapimoveis.com.br" in host:
+        if path.startswith("/imovel/") and "-id-" in path:
+            return True
         return "/imovel/" in path and (
             "venda" in path or "pra-venda" in path or "para-venda" in path
         )
     if "imovelweb.com.br" in host:
-        return "/imovel/" in path and len(path) > 24
+        return "/imovel/" in path and len(path) > 24 and "propriedades" not in path
     if "chavesnamao.com.br" in host:
         return "/imovel" in path
     if "olx.com.br" in host:
@@ -298,6 +403,129 @@ def parece_url_anuncio_individual(url: str) -> bool:
         upper = url.upper()
         return "/p/" in path or "MLB-" in upper
     return False
+
+
+def eh_url_venda(url: str) -> bool:
+    """Descarta URLs de aluguel quando somente_venda está ativo."""
+    path = (urlparse(url).path or "").lower()
+    if any(
+        x in path
+        for x in (
+            "aluguel",
+            "para-alugar",
+            "para-alugar",
+            "/alugar/",
+            "locacao",
+            "locação",
+        )
+    ):
+        return False
+    return "venda" in path or "-venda-" in path or "/imovel/venda" in path
+
+
+def url_espelho_vivareal(url: str) -> str | None:
+    """Mesmo anúncio costuma existir no Viva Real (backend Grupo ZAP/OLX)."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return None
+    host = (p.hostname or "").lower()
+    if "zapimoveis.com.br" not in host:
+        return None
+    return url.replace(host, "www.vivareal.com.br")
+
+
+def _referer_para_url(url: str) -> str | None:
+    host = (urlparse(url).hostname or "").lower()
+    if "vivareal.com.br" in host:
+        return "https://www.vivareal.com.br/"
+    if "zapimoveis.com.br" in host:
+        return "https://www.zapimoveis.com.br/"
+    if "imovelweb.com.br" in host:
+        return "https://www.imovelweb.com.br/"
+    if "olx.com.br" in host:
+        return "https://www.olx.com.br/"
+    return None
+
+
+def _walk_obj_por_urls(obj: Any, acc: list[str]) -> None:
+    if isinstance(obj, str) and obj.startswith("http") and parece_url_anuncio_individual(obj):
+        acc.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _walk_obj_por_urls(v, acc)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_obj_por_urls(v, acc)
+
+
+def _extrair_urls_de_next_data(html: str) -> list[str]:
+    m = RE_NEXT_DATA.search(html)
+    if not m:
+        return []
+    try:
+        payload = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return []
+    acc: list[str] = []
+    _walk_obj_por_urls(payload, acc)
+    return acc
+
+
+def _extrair_urls_regex_portais(html: str, base_url: str) -> list[str]:
+    found: list[str] = []
+    base_host = (urlparse(base_url).hostname or "").lower()
+
+    def _push(u: str) -> None:
+        if u not in found:
+            found.append(u)
+
+    for rx in (RE_URL_VIVAREAL, RE_URL_ZAP, RE_URL_OLX, RE_URL_IMOVELWEB):
+        for m in rx.finditer(html):
+            _push(m.group(0).rstrip("\\\",')"))
+
+    if "vivareal.com.br" in base_host:
+        for m in RE_PATH_VIVAREAL.finditer(html):
+            _push(urljoin("https://www.vivareal.com.br", m.group(0)))
+    if "zapimoveis.com.br" in base_host:
+        for m in RE_PATH_ZAP.finditer(html):
+            _push(urljoin("https://www.zapimoveis.com.br", m.group(0)))
+    # JSON embutido costuma trazer só o path /imovel/...-id-...
+    if "vivareal.com.br" in html or RE_PATH_VIVAREAL.search(html):
+        for m in RE_PATH_VIVAREAL.finditer(html):
+            _push(urljoin("https://www.vivareal.com.br", m.group(0)))
+
+    return found
+
+
+def extrair_urls_anuncio_do_html(
+    html: str, base_url: str, permitidos: list[str]
+) -> list[str]:
+    """Extrai links de anúncio via âncoras, regex e JSON embutido (__NEXT_DATA__)."""
+    vistos: set[str] = set()
+    out: list[str] = []
+
+    def _add(raw: str) -> None:
+        absolute = urljoin(base_url, raw.strip())
+        absolute = normalizar_url_anuncio(absolute.split("#", 1)[0])
+        if not _filtrar_dominio(absolute, permitidos):
+            return
+        if not parece_url_anuncio_individual(absolute):
+            return
+        if absolute not in vistos:
+            vistos.add(absolute)
+            out.append(absolute)
+
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href and not href.startswith(("#", "javascript:")):
+            _add(href)
+    for u in _extrair_urls_regex_portais(html, base_url):
+        _add(u)
+    for u in _extrair_urls_de_next_data(html):
+        _add(u)
+    return out
 
 
 def expandir_links_de_paginas_hub(
@@ -310,28 +538,35 @@ def expandir_links_de_paginas_hub(
     """Baixa página de listagem de um portal e extrai URLs de anúncios individuais."""
     out: list[str] = []
     try:
-        r = sessao.get(url_hub.strip(), timeout=timeout, allow_redirects=True)
+        ref = _referer_para_url(url_hub) or url_hub
+        home = _referer_para_url(url_hub) or "https://www.vivareal.com.br/"
+        try:
+            sessao.get(home, timeout=timeout, allow_redirects=True)
+        except _ERROS_HTTP_SESSAO:
+            pass
+        r = sessao.get(
+            url_hub.strip(),
+            timeout=timeout,
+            allow_redirects=True,
+            headers={"Referer": ref},
+        )
         if r.status_code != 200:
             LOG.warning("Hub %s: HTTP %s", url_hub[:80], r.status_code)
             return out
-        base_url = r.url
-        soup = BeautifulSoup(r.text, "html.parser")
-        vistos: set[str] = set()
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            if not href or href.startswith(("#", "javascript:")):
-                continue
-            absolute = urljoin(base_url, href)
-            absolute = absolute.split("#", 1)[0]
-            if not _filtrar_dominio(absolute, permitidos):
-                continue
-            if not parece_url_anuncio_individual(absolute):
-                continue
-            if absolute not in vistos:
-                vistos.add(absolute)
-                out.append(absolute)
-            if len(out) >= max_links:
-                break
+        if len(r.text) < 50_000:
+            LOG.warning(
+                "Hub %s: resposta curta (%s bytes) — possível bloqueio; "
+                "confira curl-cffi instalado.",
+                url_hub[:60],
+                len(r.text),
+            )
+        candidatos = extrair_urls_anuncio_do_html(r.text, r.url, permitidos)
+        out = candidatos[:max_links]
+        if not out:
+            LOG.info(
+                "Hub %s: página OK mas nenhum link de anúncio no HTML (pode ser SPA bloqueada).",
+                url_hub[:72],
+            )
     except _ERROS_HTTP_SESSAO as e:
         LOG.warning("Erro ao expandir hub %s: %s", url_hub[:80], e)
     return out
@@ -555,12 +790,23 @@ def coletar_urls(config: ConfigColeta, sessao: Any) -> list[str]:
     vistos: set[str] = set()
     resultado: list[str] = []
 
-    def add_batch(origem: Iterable[str]) -> tuple[int, int]:
+    def add_batch(origem: Iterable[str], origem_busca: bool = False) -> tuple[int, int]:
         antes = len(resultado)
         for u in origem:
-            if u not in vistos and _filtrar_dominio(u, config.dominios_permitidos):
-                vistos.add(u)
-                resultado.append(u)
+            u_norm = normalizar_url_anuncio(u)
+            if u_norm in vistos:
+                continue
+            if not _filtrar_dominio(u_norm, config.dominios_permitidos):
+                continue
+            host = (urlparse(u_norm).hostname or "").lower()
+            if config.priorizar_vivareal and origem_busca and "zapimoveis.com.br" in host:
+                continue
+            if config.somente_venda and not eh_url_venda(u_norm):
+                continue
+            if not parece_url_anuncio_individual(u_norm):
+                continue
+            vistos.add(u_norm)
+            resultado.append(u_norm)
         return len(resultado) - antes, len(resultado)
 
     for hub in config.urls_paginas_hub:
@@ -583,52 +829,61 @@ def coletar_urls(config: ConfigColeta, sessao: Any) -> list[str]:
         )
         time.sleep(config.pausa_segundos_entre_requisicoes)
 
-    for q in config.queries_busca:
-        bloco: list[str] = []
-        if config.usar_ddgs_api:
+    if config.usar_busca_web:
+        for q in config.queries_busca:
+            bloco: list[str] = []
+            if config.usar_ddgs_api:
+                bloco.extend(
+                    extrair_links_ddgs_python(
+                        q, config.max_links_por_query, config.idioma_busca_ddg
+                    )
+                )
             bloco.extend(
-                extrair_links_ddgs_python(
-                    q, config.max_links_por_query, config.idioma_busca_ddg
+                extrair_links_duckduckgo(
+                    sessao,
+                    q,
+                    config.max_links_por_query,
+                    config.idioma_busca_ddg,
+                    config.timeout_http,
                 )
             )
-        bloco.extend(
-            extrair_links_duckduckgo(
-                sessao,
-                q,
-                config.max_links_por_query,
-                config.idioma_busca_ddg,
-                config.timeout_http,
+            bloco.extend(
+                extrair_links_bing(
+                    sessao, q, config.max_links_por_query, config.timeout_http
+                )
             )
-        )
-        bloco.extend(
-            extrair_links_bing(
-                sessao, q, config.max_links_por_query, config.timeout_http
-            )
-        )
-        novas, tot = add_batch(bloco)
-        LOG.info(
-            "Busca %r → %s nova(s) URL; total candidatas=%s.",
-            q[:76],
-            novas,
-            tot,
-        )
-        time.sleep(config.pausa_segundos_entre_requisicoes)
-        if config.google_cse_api_key and config.google_cse_cx:
-            gcs = extrair_links_google_cse(
-                sessao,
-                q,
-                config.google_cse_api_key,
-                config.google_cse_cx,
-                config.max_links_por_query,
-            )
-            novas_g, tot = add_batch(gcs)
+            novas, tot = add_batch(bloco, origem_busca=True)
             LOG.info(
-                "Google CSE (%s…) → %s novas URLs; total=%s.",
-                q[:52],
-                novas_g,
+                "Busca %r → %s nova(s) URL; total candidatas=%s.",
+                q[:76],
+                novas,
                 tot,
             )
             time.sleep(config.pausa_segundos_entre_requisicoes)
+            if config.google_cse_api_key and config.google_cse_cx:
+                gcs = extrair_links_google_cse(
+                    sessao,
+                    q,
+                    config.google_cse_api_key,
+                    config.google_cse_cx,
+                    config.max_links_por_query,
+                )
+                novas_g, tot = add_batch(gcs, origem_busca=True)
+                LOG.info(
+                    "Google CSE (%s…) → %s novas URLs; total=%s.",
+                    q[:52],
+                    novas_g,
+                    tot,
+                )
+                time.sleep(config.pausa_segundos_entre_requisicoes)
+
+    def _prio(u: str) -> tuple[int, str]:
+        host = (urlparse(u).hostname or "").lower()
+        if "vivareal.com.br" in host:
+            return (0, u)
+        return (1, u)
+
+    resultado.sort(key=_prio)
     return resultado
 
 
@@ -657,18 +912,67 @@ def _telefones_do_texto(texto: str) -> list[str]:
 def _m2_do_texto(texto: str) -> str:
     m = RE_M2.search(texto)
     if not m:
+        m = RE_M2_SLUG.search(texto)
+    if not m:
         return ""
     return m.group(1).replace(".", "")
 
 
-def _eh_titulo_likely_casa(titulo: str, texto: str) -> tuple[bool, str]:
-    blob = f"{titulo} {texto}".lower()
+def extrair_m2_do_html(html: str, texto: str, titulo: str, url: str = "") -> str:
+    m = _m2_do_texto(texto) or _m2_do_texto(titulo) or _m2_do_texto(url)
+    if m:
+        return m
+    for block in _iter_ld_json(html):
+        fs = block.get("floorSize")
+        if isinstance(fs, dict):
+            val = fs.get("value") or fs.get("@value")
+            if val is not None:
+                try:
+                    return str(int(float(val)))
+                except (TypeError, ValueError):
+                    pass
+        elif isinstance(fs, (int, float)):
+            return str(int(fs))
+        elif isinstance(fs, str) and fs.strip():
+            digits = re.sub(r"[^\d]", "", fs)
+            if digits:
+                return digits
+    return ""
+
+
+def _tipo_imovel_no_slug(url: str) -> str | None:
+    path = (urlparse(url).path or "").lower()
+    for tipo in (
+        "casa",
+        "sobrado",
+        "apartamento",
+        "cobertura",
+        "terreno",
+        "kitnet",
+        "galpao",
+        "galpão",
+    ):
+        if f"/{tipo}-" in path or f"/imovel/{tipo}" in path:
+            return tipo.replace("ã", "a")
+    return None
+
+
+def _eh_titulo_likely_casa(titulo: str, texto: str, url: str = "") -> tuple[bool, str]:
+    titulo_l = (titulo or "").lower()
+    tipo_slug = _tipo_imovel_no_slug(url) if url else None
+
+    if tipo_slug in ("casa", "sobrado"):
+        return True, ""
+    if tipo_slug in ("apartamento", "cobertura", "terreno", "kitnet", "galpao"):
+        return False, f"tipo no link: {tipo_slug}"
+
+    # Evita rodapé/menu ("apartamentos na região") — usa título + início da descrição
+    blob = f"{titulo_l} {(texto or '')[:2500]}".lower()
     for p in PALAVRAS_EXCLUIR_TIPO:
         if p in blob:
             return False, f"exclusão por tipo: {p}"
     if any(k in blob for k in PALAVRAS_PREFERIR_CASA):
         return True, ""
-    # Ambíguo: mantém se não há exclusão explícita (alguns sites só dizem "residencial")
     return True, ""
 
 
@@ -691,11 +995,39 @@ def _iter_ld_json(html: str) -> Iterator[dict[str, Any]]:
             yield data
 
 
+def _coordenadas_embutidas_no_html(html: str) -> tuple[float | None, float | None]:
+    """Viva Real / Zap costumam embutir lat/lon no HTML/JS (fora do JSON-LD)."""
+    # Par lat/lon explícito em JSON
+    m = re.search(
+        r'["\']?(?:lat|latitude)["\']?\s*[:=]\s*(-?\d{1,2}\.\d{4,})'
+        r'[^0-9\-]{0,40}["\']?(?:lng|lon|longitude)["\']?\s*[:=]\s*(-?\d{1,3}\.\d{4,})',
+        html,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return float(m.group(1)), float(m.group(2))
+        except ValueError:
+            pass
+    # Faixa típica Grande São Paulo (projeto focado Zona Leste)
+    lats = re.findall(r"-23\.\d{5,}", html)
+    lons = re.findall(r"-46\.\d{5,}", html)
+    if lats and lons:
+        try:
+            return float(lats[0]), float(lons[0])
+        except ValueError:
+            pass
+    return None, None
+
+
 def extrair_coordenadas_do_html(html: str) -> tuple[float | None, float | None]:
     for block in _iter_ld_json(html):
         lat, lon = _latlng_de_objeto_jsonld(block)
         if lat is not None and lon is not None:
             return lat, lon
+    lat, lon = _coordenadas_embutidas_no_html(html)
+    if lat is not None and lon is not None:
+        return lat, lon
     soup = BeautifulSoup(html, "html.parser")
     lat_m = soup.find("meta", attrs={"itemprop": "latitude"}) or soup.find(
         "meta", attrs={"property": "place:location:latitude"}
@@ -756,8 +1088,62 @@ def extrair_endereco_do_html(html: str, soup: BeautifulSoup | None = None) -> st
             return ", ".join(p for p in partes if p)
         if isinstance(end, str) and end:
             return end
+    # Viva Real: bloco "Localização" costuma ter "Rua ..., bairro - SP"
+    m_rua = re.search(
+        r"((?:Rua|Av\.|Avenida|Travessa|Alameda)[^<\n]{8,120}?-\s*(?:SP|São Paulo))",
+        html,
+        re.IGNORECASE,
+    )
+    if m_rua:
+        return m_rua.group(1).strip()[:500]
     texto = _texto_visivel(soup)
     return texto[:400].replace("\n", " ")
+
+
+def ponto_no_bounding_box(lat: float, lon: float, bbox: BoundingBox) -> bool:
+    return bbox.sul <= lat <= bbox.norte and bbox.oeste <= lon <= bbox.leste
+
+
+def texto_menciona_bairro_interesse(texto: str, bairros: list[str]) -> bool:
+    blob = (texto or "").lower()
+    return any(b.lower() in blob for b in bairros if b)
+
+
+def avaliar_filtro_geografico(
+    lat: float,
+    lon: float,
+    filtro: FiltroRegioes,
+    config: ConfigColeta,
+    texto_localizacao: str,
+    url: str,
+) -> tuple[bool, str]:
+    """
+    Decide se o anúncio entra no CSV.
+    poligono: só dentro dos polígonos desenhados nas imagens.
+    bbox: só dentro do bounding_box do JSON.
+    poligono_ou_bbox (padrão): polígono OU bounding_box (evita CSV vazio se mapa não calibrar).
+    poligono_ou_bairro: polígono OU bbox OU menção a bairro de interesse no texto/URL.
+    """
+    modo = (config.filtro_geo or "poligono_ou_bbox").lower()
+
+    for reg in filtro.regioes:
+        verts = reg.poligono.vertices_latlng
+        if len(verts) < 3:
+            continue
+        anel = [(lng, la) for la, lng in verts]
+        if ponto_em_poligono(lon, lat, anel):
+            return True, reg.id_regiao
+
+    if modo in ("bbox", "poligono_ou_bbox", "poligono_ou_bairro"):
+        if ponto_no_bounding_box(lat, lon, config.bounding_box):
+            return True, ""
+
+    if modo == "poligono_ou_bairro":
+        blob = f"{texto_localizacao} {url}"
+        if texto_menciona_bairro_interesse(blob, config.bairros_interesse):
+            return True, ""
+
+    return False, ""
 
 
 def extrair_titulo(soup: BeautifulSoup) -> str:
@@ -776,18 +1162,57 @@ def processar_url_anuncio(
     geolocator: Nominatim,
     config: ConfigColeta,
 ) -> AnuncioCasa | None:
+    url = normalizar_url_anuncio(url)
+    if not parece_url_anuncio_individual(url):
+        LOG.debug("Ignorada (não é página de anúncio): %s", url[:100])
+        return None
+
+    headers: dict[str, str] = {}
+    ref = _referer_para_url(url)
+    if ref:
+        headers["Referer"] = ref
+
+    req_kw: dict[str, Any] = {
+        "timeout": config.timeout_http,
+        "allow_redirects": True,
+    }
+    if headers:
+        req_kw["headers"] = headers
+    def _get_pagina(target: str):
+        ref_t = _referer_para_url(target)
+        kw = dict(req_kw)
+        if ref_t:
+            kw["headers"] = {**(headers or {}), "Referer": ref_t}
+        return sessao.get(target, **kw)
+
     try:
-        r = sessao.get(url, timeout=config.timeout_http, allow_redirects=True)
+        r = _get_pagina(url)
+        if r.status_code in (403, 429):
+            LOG.info("HTTP %s em %s; aguardando e reaquecendo sessão…", r.status_code, url[:80])
+            time.sleep(4.0)
+            aquecer_sessao_portais(sessao, config)
+            r = _get_pagina(url)
+        if r.status_code == 404:
+            alt = url_espelho_vivareal(url)
+            if alt and alt != url:
+                LOG.info("404 no Zap; tentando espelho Viva Real: %s", alt[:100])
+                r = _get_pagina(alt)
+        if r.status_code == 404:
+            LOG.warning(
+                "GET %s: HTTP 404 (link antigo da busca ou anúncio encerrado)",
+                url[:120],
+            )
+            return None
         r.raise_for_status()
     except _ERROS_HTTP_SESSAO as e:
-        LOG.warning("GET %s: %s", url, e)
+        LOG.warning("GET %s: %s", url[:120], e)
         return None
 
     html = r.text
     soup = BeautifulSoup(html, "html.parser")
     titulo = extrair_titulo(soup)
     texto = _texto_visivel(soup)
-    ok_tipo, motivo = _eh_titulo_likely_casa(titulo, texto)
+    ok_tipo, motivo = _eh_titulo_likely_casa(titulo, texto, url=r.url)
     anuncio = AnuncioCasa(
         endereco="",
         tamanho_m2="",
@@ -800,10 +1225,11 @@ def processar_url_anuncio(
     )
     if not ok_tipo:
         anuncio.motivo_exclusao = motivo
+        LOG.debug("Descartado (tipo): %s — %s", url[:80], motivo)
         return None
 
     anuncio.endereco = extrair_endereco_do_html(html, soup=soup)
-    anuncio.tamanho_m2 = _m2_do_texto(texto) or _m2_do_texto(titulo)
+    anuncio.tamanho_m2 = extrair_m2_do_html(html, texto, titulo, url=r.url)
 
     phones = _telefones_do_texto(texto)
     if phones:
@@ -823,23 +1249,27 @@ def processar_url_anuncio(
             lat, lon = None, None
 
     if lat is None or lon is None:
+        LOG.debug("Descartado (sem coordenadas): %s", url[:80])
         return None
 
     anuncio.latitude = str(lat)
     anuncio.longitude = str(lon)
 
-    if not filtro.contem_coordenadas(lat, lon):
+    texto_loc = f"{titulo} {anuncio.endereco}"
+    aceito, regiao_id = avaliar_filtro_geografico(
+        lat, lon, filtro, config, texto_loc, r.url
+    )
+    if not aceito:
+        LOG.debug(
+            "Descartado (fora da área de interesse, modo=%s): %s (%.5f, %.5f)",
+            config.filtro_geo,
+            url[:80],
+            lat,
+            lon,
+        )
         return None
 
-    for reg in filtro.regioes:
-        verts = reg.poligono.vertices_latlng
-        if len(verts) < 3:
-            continue
-        anel = [(lng, la) for la, lng in verts]
-        if ponto_em_poligono(lon, lat, anel):
-            anuncio.regiao_poligono_id = reg.id_regiao
-            break
-
+    anuncio.regiao_poligono_id = regiao_id
     return anuncio
 
 
@@ -877,23 +1307,48 @@ def rodar_coleta(config: ConfigColeta, raiz_projeto: Path | None = None) -> Path
     LOG.info("Filtro carregado: %s polígonos.", len(filtro.regioes))
 
     sessao = criar_sessao_http(config)
-
+    aquecer_sessao_portais(sessao, config)
 
     urls = coletar_urls(config, sessao)
-    LOG.info("%s URLs candidatas após busca.", len(urls))
+    LOG.info("%s URLs candidatas após busca (somente páginas de anúncio).", len(urls))
+    if not urls:
+        LOG.warning(
+            "Nenhuma URL de anúncio válida. Confira hubs em urls_paginas_hub ou reduza "
+            "dependência só de buscas (links de busca costumam estar desatualizados)."
+        )
+
+    limite = max(1, config.max_anuncios_processar)
+    if len(urls) > limite:
+        LOG.info(
+            "Processando os primeiros %s de %s URLs (max_anuncios_processar).",
+            limite,
+            len(urls),
+        )
+        urls = urls[:limite]
 
     geolocator = Nominatim(user_agent=config.user_agent[:120], timeout=20)
     anuncios: list[AnuncioCasa] = []
-    for u in urls:
-        a = processar_url_anuncio(u, sessao, filtro, geolocator, config)
+    for i, u in enumerate(urls, start=1):
+        LOG.info("Processando %s/%s …", i, len(urls))
+        try:
+            a = processar_url_anuncio(u, sessao, filtro, geolocator, config)
+        except Exception as e:
+            LOG.warning("Erro inesperado em %s: %s", u[:100], e)
+            a = None
         if a:
             anuncios.append(a)
-            LOG.info("Aceito: %s", a.link)
+            m2_txt = f" | {a.tamanho_m2} m²" if a.tamanho_m2 else ""
+            LOG.info("Aceito: %s%s", a.link[:90], m2_txt)
         time.sleep(config.pausa_segundos_entre_requisicoes)
 
     out = raiz / config.arquivo_saida_csv
     salvar_csv(anuncios, out)
     LOG.info("CSV gravado em %s (%s linhas).", out, len(anuncios))
+    if len(anuncios) == 0 and urls:
+        LOG.warning(
+            "Nenhum anúncio passou no filtro. Causas comuns: HTTP 404 em links antigos da "
+            "busca, página sem coordenadas, ou imóvel fora dos polígonos em regioes_interesse."
+        )
     return out
 
 

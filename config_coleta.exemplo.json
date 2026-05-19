@@ -24,13 +24,15 @@
   "regenerar_filtro_das_imagens": true,
   "pasta_regioes_interesse": "regioes_interesse",
   "queries_busca": [
-    "casa à venda vila patriarca são paulo",
-    "casa venda zona leste são paulo sobrado",
-    "casa à venda itaquera dom bosco",
-    "casa venda site:vivareal.com.br patriarca",
-    "casa venda site:zapimoveis.com.br itaquera",
-    "casa venda site:olx.com.br zona leste sp"
+    "casa venda site:vivareal.com.br/imovel patriarca são paulo",
+    "casa venda site:vivareal.com.br/imovel itaquera zona leste"
   ],
+  "usar_busca_web": false,
+  "priorizar_vivareal": true,
+  "somente_venda": true,
+  "aquecer_sessao": true,
+  "filtro_geo": "poligono_ou_bbox",
+  "max_anuncios_processar": 40,
   "max_links_por_query": 10,
   "google_cse_api_key": null,
   "google_cse_cx": null,

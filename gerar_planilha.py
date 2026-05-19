@@ -63,6 +63,7 @@ def csv_para_planilha(
         "Índice",
         "Link do anúncio",
         "Endereço",
+        "Tamanho (m²)",
         "Telefone da imobiliária",
         "Telefone do vendedor",
     ]
@@ -84,6 +85,7 @@ def csv_para_planilha(
         for idx, row in enumerate(reader, start=1):
             link = (row.get("link") or "").strip()
             endereco = (row.get("endereco") or "").strip()
+            tamanho_m2 = (row.get("tamanho_m2") or "").strip()
             tel_imob = (row.get("telefone_imobiliaria") or "").strip()
             tel_vend = (row.get("telefone_vendedor") or "").strip()
 
@@ -109,18 +111,23 @@ def csv_para_planilha(
             c_end.alignment = Alignment(vertical="top", wrap_text=True)
             _aplicar_borda(c_end)
 
-            c_imob = ws.cell(row=r, column=4, value=tel_imob)
+            c_m2 = ws.cell(row=r, column=4, value=tamanho_m2)
+            c_m2.font = FONTE_CORPO
+            c_m2.alignment = Alignment(horizontal="center", vertical="top", wrap_text=False)
+            _aplicar_borda(c_m2)
+
+            c_imob = ws.cell(row=r, column=5, value=tel_imob)
             c_imob.font = FONTE_CORPO
             c_imob.alignment = Alignment(vertical="top", wrap_text=False)
             _aplicar_borda(c_imob)
 
-            c_vend = ws.cell(row=r, column=5, value=tel_vend if tel_vend else "")
+            c_vend = ws.cell(row=r, column=6, value=tel_vend if tel_vend else "")
             c_vend.font = FONTE_CORPO
             c_vend.alignment = Alignment(vertical="top", wrap_text=False)
             _aplicar_borda(c_vend)
 
             if idx % 2 == 0:
-                for c in range(1, 6):
+                for c in range(1, 7):
                     ws.cell(row=r, column=c).fill = FILL_ZEBRA
 
             linhas += 1
@@ -132,8 +139,9 @@ def csv_para_planilha(
             1: 11,
             2: 54,
             3: 50,
-            4: 24,
+            4: 14,
             5: 24,
+            6: 24,
         },
     )
 
