@@ -117,6 +117,21 @@ RE_M2 = re.compile(
 # Metragem em slug de URL (ex.: ...-100m2-venda-...)
 RE_M2_SLUG = re.compile(r"(\d{1,4})m2(?:-|$)", re.IGNORECASE)
 
+# Endereço em linha (Viva Real / Zap no HTML) — ex.: Rua X, 330 - Itaquera, São Paulo - SP
+RE_ENDERECO_LINHA = re.compile(
+    r"((?:Rua|R\.|Av\.|Avenida|Travessa|Alameda|Praça|Estrada|Rod\.)\s"
+    r"[^<\"\\]{5,90}?"
+    r",\s*\d+"
+    r"[^<\"\\]{0,55}?"
+    r"-\s*SP\b)",
+    re.IGNORECASE,
+)
+RE_CEP_BR = re.compile(r"\b(0[1-9]\d{3})-?(\d{3})\b")
+RE_CEP_ROTULO = re.compile(
+    r"(?:CEP|cep|postalCode|zipCode)[\"'\s:]*[\"'\s]*(\d{5})-?(\d{3})",
+    re.IGNORECASE,
+)
+
 # Parâmetros uddg= em qualquer HTML retornado pelo DuckDuckGo
 RE_UDDG_PARAM = re.compile(r"uddg=([^&\"'<>]+)", re.IGNORECASE)
 
@@ -1063,16 +1078,99 @@ def _latlng_de_objeto_jsonld(obj: dict[str, Any]) -> tuple[float | None, float |
     return None, None
 
 
+def _limpar_texto_endereco(texto: str) -> str:
+    t = re.sub(r"\s+", " ", (texto or "").strip())
+    t = t.replace("\\u002F", "/")
+    return t[:500]
+
+
+def _endereco_de_dict(end: dict[str, Any]) -> str:
+    partes: list[str] = []
+    rua = end.get("streetAddress") or end.get("street")
+    num = end.get("streetNumber")
+    if rua:
+        partes.append(f"{rua}, {num}" if num else str(rua))
+    bairro = end.get("addressNeighborhood") or end.get("neighborhood")
+    cidade = end.get("addressLocality") or end.get("city")
+    uf = end.get("addressRegion") or end.get("state")
+    if bairro:
+        partes.append(str(bairro))
+    if cidade or uf:
+        loc = ", ".join(p for p in (cidade, uf) if p)
+        if loc:
+            partes.append(loc)
+    cep = end.get("postalCode") or end.get("zipCode")
+    if cep:
+        dig = re.sub(r"\D", "", str(cep))
+        if len(dig) == 8:
+            partes.append(f"CEP {dig[:5]}-{dig[5:]}")
+    return _limpar_texto_endereco(", ".join(partes))
+
+
+def _walk_endereco_json(obj: Any, acc: list[str]) -> None:
+    if isinstance(obj, dict):
+        keys = set(obj.keys())
+        if keys & {
+            "streetAddress",
+            "street",
+            "postalCode",
+            "zipCode",
+            "addressLocality",
+            "neighborhood",
+        }:
+            txt = _endereco_de_dict(obj)
+            if txt and txt not in acc:
+                acc.append(txt)
+        for v in obj.values():
+            _walk_endereco_json(v, acc)
+    elif isinstance(obj, list):
+        for item in obj[:120]:
+            _walk_endereco_json(item, acc)
+
+
+def _extrair_cep_do_html(html: str) -> str | None:
+    m = RE_CEP_ROTULO.search(html)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    zona_leste: list[str] = []
+    outros: list[str] = []
+    vistos: set[str] = set()
+    for m in RE_CEP_BR.finditer(html):
+        cep = f"{m.group(1)}-{m.group(2)}"
+        if cep in vistos:
+            continue
+        vistos.add(cep)
+        if m.group(1).startswith("08"):
+            zona_leste.append(cep)
+        else:
+            outros.append(cep)
+    if zona_leste:
+        return zona_leste[0]
+    if outros:
+        return outros[0]
+    return None
+
+
+def _endereco_parece_marketing(texto: str) -> bool:
+    t = texto.lower()
+    return (
+        "entre em contato" in t
+        or "para venda com" in t
+        or "por r$" in t
+        or "vivareal" in t and "casas na zona" in t
+    )
+
+
 def extrair_endereco_do_html(html: str, soup: BeautifulSoup | None = None) -> str:
     if soup is None:
         soup = BeautifulSoup(html, "html.parser")
-    for sel in (
-        ("meta", {"property": "og:description"}),
-        ("meta", {"name": "description"}),
-    ):
-        tag = soup.find(sel[0], attrs=sel[1])
-        if tag and tag.get("content"):
-            return tag["content"].strip()[:500]
+
+    # 1) Linha de rua visível no HTML (padrão Viva Real / Zap)
+    m = RE_ENDERECO_LINHA.search(html)
+    if m:
+        return _limpar_texto_endereco(m.group(1))
+
+    # 2) JSON-LD com PostalAddress
     for block in _iter_ld_json(html):
         end = block.get("address")
         if end is None:
@@ -1080,24 +1178,53 @@ def extrair_endereco_do_html(html: str, soup: BeautifulSoup | None = None) -> st
             if isinstance(obj, dict):
                 end = obj.get("address")
         if isinstance(end, dict):
-            partes = [
-                end.get("streetAddress"),
-                end.get("addressLocality"),
-                end.get("addressRegion"),
-            ]
-            return ", ".join(p for p in partes if p)
-        if isinstance(end, str) and end:
-            return end
-    # Viva Real: bloco "Localização" costuma ter "Rua ..., bairro - SP"
-    m_rua = re.search(
-        r"((?:Rua|Av\.|Avenida|Travessa|Alameda)[^<\n]{8,120}?-\s*(?:SP|São Paulo))",
-        html,
-        re.IGNORECASE,
-    )
-    if m_rua:
-        return m_rua.group(1).strip()[:500]
-    texto = _texto_visivel(soup)
-    return texto[:400].replace("\n", " ")
+            txt = _endereco_de_dict(end)
+            if txt:
+                return txt
+        if isinstance(end, str) and end and not _endereco_parece_marketing(end):
+            return _limpar_texto_endereco(end)
+
+    # 3) Campos de endereço em JSON embutido (scripts / payload)
+    acc: list[str] = []
+    for script in soup.find_all("script"):
+        raw = script.string or script.get_text() or ""
+        if len(raw) < 50:
+            continue
+        if "address" not in raw.lower() and "street" not in raw.lower():
+            continue
+        try:
+            if raw.strip().startswith(("{", "[")):
+                _walk_endereco_json(json.loads(raw), acc)
+        except json.JSONDecodeError:
+            pass
+    m_st = re.search(r'"streetAddress"\s*:\s*"([^"]+)"', html)
+    if m_st:
+        bairro_m = re.search(r'"neighborhood"\s*:\s*"([^"]+)"', html)
+        cidade_m = re.search(r'"city"\s*:\s*"([^"]+)"', html)
+        partes = [m_st.group(1)]
+        if bairro_m:
+            partes.append(bairro_m.group(1))
+        if cidade_m:
+            partes.append(cidade_m.group(1))
+        partes.append("SP")
+        acc.insert(0, _limpar_texto_endereco(", ".join(partes)))
+    if acc:
+        return acc[0]
+
+    # 4) CEP + bairro (quando a rua não vem exposta)
+    cep = _extrair_cep_do_html(html)
+    if cep:
+        for bloco in _iter_ld_json(html):
+            if isinstance(bloco.get("address"), dict):
+                b = bloco["address"].get("addressLocality") or bloco["address"].get(
+                    "neighborhood"
+                )
+                if b:
+                    return _limpar_texto_endereco(f"{b}, São Paulo - SP, CEP {cep}")
+        return f"CEP {cep}"
+
+    # 5) Não usar meta description (texto promocional do portal)
+    return ""
 
 
 def ponto_no_bounding_box(lat: float, lon: float, bbox: BoundingBox) -> bool:
