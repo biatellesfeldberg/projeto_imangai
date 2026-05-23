@@ -82,8 +82,47 @@ Projeto de web scraping para encontrar na internet possíveis casas à venda nas
 ### 3.6 Ordem sugerida do fluxo completo
 
 1. Ajustar imagens e, se precisar, regenerar o filtro (`filtro_regioes.py` / imagens em `regioes_interesse`).
-2. Rodar **`coletor_casas.py`** com o JSON de configuração → **CSV** em **`saida/`**.
-3. Rodar **`gerar_planilha.py`** → **planilha** em **`planilhas_geradas/`**.
+2. Rodar **`coletor_casas.py`** com o JSON de configuração → **CSV** em **`saida/`** (o mapa em **`site/`** é atualizado automaticamente).
+3. Rodar **`gerar_planilha.py`** → **planilha** em **`planilhas_geradas/`** (também atualiza o mapa).
+
+## Passo 4 — mapa interativo no navegador
+
+### 4.1 Objetivo
+
+- Pasta **`site/`**: página estática com **mapa de São Paulo** (OpenStreetMap via Leaflet) e **pins vermelhos** para cada imóvel do CSV (usa **latitude** e **longitude** já coletadas).
+- Ao **passar o mouse** sobre um pin, aparece o **link do anúncio**; clique abre o portal em nova aba.
+
+### 4.2 Atualização automática
+
+- O arquivo **`site/dados.js`** é gerado a partir do CSV por **`gerar_mapa.py`**.
+- Ele é recriado automaticamente ao final de **`coletor_casas.py`** e de **`gerar_planilha.py`**, para o site refletir sempre a base atual.
+
+### 4.3 Como abrir (sem rodar servidor)
+
+- Abra no navegador (duplo clique ou arrastar para o Chrome/Safari):
+
+  **`site/index.html`**
+
+- Caminho completo no seu Mac, por exemplo: `file:///Users/.../projeto_imangai/site/index.html`
+
+- É necessário **internet** para carregar o mapa de fundo (tiles OpenStreetMap) e os ícones dos pins.
+
+### 4.4 Comando manual (opcional)
+
+```bash
+python gerar_mapa.py
+python gerar_mapa.py --entrada saida/casas_filtradas.csv
+```
+
+### 4.5 Site público (compartilhar link)
+
+O mapa é publicado automaticamente no **GitHub Pages** sempre que a branch **`main`** recebe um push (workflow **`.github/workflows/publicar-site.yml`**).
+
+**URL para enviar a qualquer pessoa:**
+
+**https://biatellesfeldberg.github.io/projeto_imangai/**
+
+Depois de rodar o coletor, faça **commit e push** do CSV (`saida/casas_filtradas.csv`) e da pasta **`site/`** (ou só do CSV — o workflow regera `dados.js` na nuvem). Em um ou dois minutos o mapa online reflete a última versão.
 
 ## Problemas comuns — OpenCV (`cv2`) no Anaconda (macOS)
 

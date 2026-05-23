@@ -1,0 +1,190 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: #1a1a1a;
+  background: #f0f2f5;
+}
+
+.cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  background: #1f4e79;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.cabecalho h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.subtitulo {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  opacity: 0.9;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+  text-align: right;
+  opacity: 0.95;
+}
+
+.meta-total {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.meta-data {
+  font-size: 0.78rem;
+  opacity: 0.88;
+}
+
+/* Pins modernos (HTML no mapa) */
+.leaflet-marker-icon.pin-moderno-wrap {
+  background: transparent !important;
+  border: none !important;
+}
+
+.pin-moderno {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  background: linear-gradient(145deg, #ff6b6b 0%, #ef5350 40%, #d32f2f 100%);
+  border: 3px solid #fff;
+  border-radius: 50% 50% 50% 2px;
+  transform: rotate(-45deg);
+  box-shadow:
+    0 8px 20px rgba(211, 47, 47, 0.42),
+    0 2px 6px rgba(0, 0, 0, 0.18);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.pin-moderno-ponto {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 11px;
+  height: 11px;
+  background: #fff;
+  border-radius: 50%;
+  transform: rotate(45deg);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.pin-moderno-sombra {
+  position: absolute;
+  left: 50%;
+  bottom: -9px;
+  width: 18px;
+  height: 6px;
+  margin-left: -9px;
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 50%;
+  transform: rotate(45deg);
+  filter: blur(2px);
+}
+
+.pin-moderno-wrap.pin-moderno--hover .pin-moderno {
+  transform: rotate(-45deg) scale(1.12);
+  box-shadow:
+    0 12px 28px rgba(211, 47, 47, 0.55),
+    0 4px 10px rgba(0, 0, 0, 0.22);
+}
+
+.mapa {
+  height: calc(100vh - 7.5rem);
+  width: 100%;
+}
+
+.rodape {
+  padding: 0.45rem 1rem;
+  font-size: 0.78rem;
+  color: #555;
+  background: #fff;
+  border-top: 1px solid #ddd;
+}
+
+.pin-popup {
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.pin-popup strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.pin-popup .endereco {
+  font-size: 0.82rem;
+  color: #333;
+  margin: 0 0 0.5rem;
+  line-height: 1.35;
+}
+
+.pin-popup .detalhe {
+  font-size: 0.78rem;
+  color: #666;
+  margin: 0.15rem 0;
+}
+
+.pin-popup a.link-anuncio {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.65rem;
+  background: #c62828;
+  color: #fff !important;
+  text-decoration: none;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.pin-popup a.link-anuncio:hover {
+  background: #b71c1c;
+}
+
+.leaflet-tooltip.pin-tooltip {
+  background: #fff;
+  border: 2px solid #c62828;
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.leaflet-tooltip.pin-tooltip a {
+  color: #c62828;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.leaflet-tooltip.pin-tooltip a:hover {
+  text-decoration: underline;
+}
+
+.mensagem-vazia {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 2rem;
+  text-align: center;
+  color: #555;
+}
