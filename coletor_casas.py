@@ -104,11 +104,21 @@ DOMINIOS_PADRAO_PORTAIS = [
     "mercadolivre.com.br",
 ]
 
+RE_ID_ANUNCIO_URL = re.compile(r"-id-(\d+)\b", re.IGNORECASE)
+RE_TEL_HREF = re.compile(r"tel:([+\d\s\-().]+)", re.IGNORECASE)
+RE_TELEFONE_JSON = re.compile(
+    r'"(?:phone|telephone|mobilePhone|phones|whatsapp|contactPhone)"\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+# Celular (11) 9xxxx-xxxx ou fixo (11) xxxx-xxxx (com separadores)
 RE_TELEFONE_BR = re.compile(
     r"(?:\+?55\s*)?"
-    r"(?:\(\s*\d{2}\s*\)|\d{2})\s*"
-    r"\d{4,5}\s*[-.\s]?\s*\d{4}\b"
+    r"(?:\(\s*(\d{2})\s*\)|(?<!\d)(\d{2})(?!\d))\s*"
+    r"((?:9\d{4}[-.\s]?\d{4})|(?:[2-5]\d{3}[-.\s]?\d{4}))\b"
 )
+# Celular/fixos colados no HTML/JS (ex.: 11971236912) — só com validação posterior
+RE_CELULAR_EMBUTIDO = re.compile(r"(?<!\d)([1-9]\d9\d{8})(?!\d)")
+RE_FIXO_EMBUTIDO = re.compile(r"(?<!\d)([1-9]\d[2-5]\d{7})(?!\d)")
 
 RE_M2 = re.compile(
     r"(\d{1,3}(?:\.\d{3})*|\d+)\s*(?:m²|m2|metros?\s*quadrados?)",
@@ -914,14 +924,127 @@ def _texto_visivel(soup: BeautifulSoup) -> str:
     return " \n ".join(parts)
 
 
-def _telefones_do_texto(texto: str) -> list[str]:
-    encontrados = RE_TELEFONE_BR.findall(texto)
-    limpos: list[str] = []
-    for t in encontrados:
-        norm = re.sub(r"\s+", " ", t.strip())
-        if norm not in limpos:
-            limpos.append(norm)
-    return limpos
+def _so_digitos(valor: str) -> str:
+    return re.sub(r"\D", "", valor or "")
+
+
+def _ids_excluir_da_url(url: str) -> set[str]:
+    return {m.group(1) for m in RE_ID_ANUNCIO_URL.finditer(url or "")}
+
+
+def _formatar_telefone_br(digits: str) -> str:
+    if len(digits) == 13 and digits.startswith("55"):
+        digits = digits[2:]
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    if len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    return digits
+
+
+def _telefone_br_valido(digits: str, ids_excluir: set[str]) -> bool:
+    if not digits or digits in ids_excluir:
+        return False
+    if len(digits) == 13 and digits.startswith("55"):
+        digits = digits[2:]
+    if len(digits) not in (10, 11):
+        return False
+    try:
+        ddd = int(digits[:2])
+    except ValueError:
+        return False
+    if ddd < 11 or ddd > 99:
+        return False
+    if len(digits) == 11:
+        return digits[2] == "9"
+    return digits[2] in "2345"
+
+
+def _registrar_telefone(
+    bruto: str,
+    ids_excluir: set[str],
+    vistos: set[str],
+    saida: list[str],
+) -> None:
+    digits = _so_digitos(bruto)
+    if not _telefone_br_valido(digits, ids_excluir):
+        return
+    fmt = _formatar_telefone_br(digits)
+    if fmt not in vistos:
+        vistos.add(fmt)
+        saida.append(fmt)
+
+
+def extrair_telefones_do_html(
+    html: str,
+    url: str,
+    soup: BeautifulSoup | None = None,
+) -> list[str]:
+    """Extrai telefones BR reais; ignora IDs de anúncio e números inválidos."""
+    ids_excluir = _ids_excluir_da_url(url)
+    vistos: set[str] = set()
+    saida: list[str] = []
+
+    if soup is None:
+        soup = BeautifulSoup(html, "html.parser")
+
+    for a in soup.find_all("a", href=True):
+        href = a.get("href") or ""
+        if href.lower().startswith("tel:"):
+            _registrar_telefone(href[4:], ids_excluir, vistos, saida)
+        if "whatsapp" in href.lower() or "wa.me" in href.lower():
+            for m in re.finditer(r"\d{10,13}", href):
+                _registrar_telefone(m.group(0), ids_excluir, vistos, saida)
+
+    for m in RE_TELEFONE_JSON.finditer(html):
+        _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+
+    for m in RE_TEL_HREF.finditer(html):
+        _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+
+    for ddd, corpo in RE_TELEFONE_BR.findall(html):
+        _registrar_telefone(f"{ddd}{_so_digitos(corpo)}", ids_excluir, vistos, saida)
+
+    bloco = _texto_visivel(soup)
+    for ddd, corpo in RE_TELEFONE_BR.findall(bloco):
+        _registrar_telefone(f"{ddd}{_so_digitos(corpo)}", ids_excluir, vistos, saida)
+
+    for m in RE_CELULAR_EMBUTIDO.finditer(bloco):
+        _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+    for m in RE_FIXO_EMBUTIDO.finditer(bloco):
+        _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+    if not saida:
+        for m in RE_CELULAR_EMBUTIDO.finditer(html):
+            _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+        for m in RE_FIXO_EMBUTIDO.finditer(html):
+            _registrar_telefone(m.group(1), ids_excluir, vistos, saida)
+
+    return _priorizar_telefones(saida)
+
+
+def _priorizar_telefones(phones: list[str]) -> list[str]:
+    """Celular primeiro; remove centrais genéricas; prioriza DDD 11 (SP)."""
+    celulares: list[str] = []
+    outros: list[str] = []
+    for p in phones:
+        dig = _so_digitos(p)
+        if len(dig) == 11 and dig[2] == "9":
+            celulares.append(p)
+        elif len(dig) == 10:
+            if dig.endswith("0000") or dig[2:4] in ("00", "30", "40", "80"):
+                continue
+            outros.append(p)
+        else:
+            outros.append(p)
+    if celulares:
+        sp = [p for p in celulares if _so_digitos(p).startswith("11")]
+        if sp:
+            celulares = sp
+    if outros:
+        sp_fixo = [p for p in outros if _so_digitos(p).startswith("11")]
+        if sp_fixo:
+            outros = sp_fixo
+    return celulares + outros
 
 
 def _m2_do_texto(texto: str) -> str:
@@ -1358,7 +1481,7 @@ def processar_url_anuncio(
     anuncio.endereco = extrair_endereco_do_html(html, soup=soup)
     anuncio.tamanho_m2 = extrair_m2_do_html(html, texto, titulo, url=r.url)
 
-    phones = _telefones_do_texto(texto)
+    phones = extrair_telefones_do_html(html, r.url, soup=soup)
     if phones:
         anuncio.telefone_imobiliaria = phones[0]
         anuncio.telefone_vendedor = phones[1] if len(phones) > 1 else ""
@@ -1471,6 +1594,13 @@ def rodar_coleta(config: ConfigColeta, raiz_projeto: Path | None = None) -> Path
     out = raiz / config.arquivo_saida_csv
     salvar_csv(anuncios, out)
     LOG.info("CSV gravado em %s (%s linhas).", out, len(anuncios))
+    try:
+        from gerar_mapa import atualizar_site_mapa
+
+        js_mapa = atualizar_site_mapa(out, raiz / "site")
+        LOG.info("Mapa do site atualizado: %s", js_mapa)
+    except Exception as e:
+        LOG.warning("Não foi possível atualizar o mapa em site/: %s", e)
     if len(anuncios) == 0 and urls:
         LOG.warning(
             "Nenhum anúncio passou no filtro. Causas comuns: HTTP 404 em links antigos da "

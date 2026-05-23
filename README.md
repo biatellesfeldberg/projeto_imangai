@@ -116,18 +116,17 @@ python gerar_mapa.py --entrada saida/casas_filtradas.csv
 
 ### 4.5 Site público (compartilhar link)
 
-Há um workflow em **`.github/workflows/publicar-site.yml`** que publica a pasta **`site/`** no **GitHub Pages** a cada push na **`main`**.
+A cada push na branch **`main`**, o workflow **`.github/workflows/publicar-site.yml`** publica a pasta **`site/`** no **GitHub Pages**.
 
-**URL (quando o Pages estiver ativo):**
+**URL do mapa (envie para qualquer pessoa):**
 
 **https://biatellesfeldberg.github.io/projeto_imangai/**
 
-**Importante:** no plano gratuito do GitHub, **Pages em repositório privado não está disponível**. O repositório `projeto_imangai` está **privado**, então é preciso **uma** destas opções:
+**Como ver no navegador:** abra esse link no Chrome, Safari ou Firefox (precisa de internet para o mapa de fundo).
 
-1. **Tornar o repositório público** (recomendado, mais simples): em [github.com/biatellesfeldberg/projeto_imangai/settings](https://github.com/biatellesfeldberg/projeto_imangai/settings) → *Danger Zone* → *Change repository visibility* → **Public**. Depois, em *Actions*, rode de novo o workflow **“Publicar mapa (GitHub Pages)”** (ou faça um push qualquer na `main`).
-2. **Manter privado e usar Netlify/Cloudflare Pages** (grátis): conecte o GitHub ao serviço, pasta de publicação **`site`**, comando de build opcional: `python gerar_mapa.py`.
+**Como atualizar o site online:** depois de rodar o coletor, faça commit e push do CSV (`saida/casas_filtradas.csv`). O workflow regera `dados.js` e republica em cerca de 1–2 minutos.
 
-Depois de rodar o coletor, faça **commit e push** do CSV (`saida/casas_filtradas.csv`) — o workflow regera `dados.js` na nuvem antes de publicar.
+**No seu Mac (sem esperar o Pages):** abra o arquivo local `site/index.html` no navegador (duplo clique na pasta `site/`).
 
 ## Problemas comuns — OpenCV (`cv2`) no Anaconda (macOS)
 

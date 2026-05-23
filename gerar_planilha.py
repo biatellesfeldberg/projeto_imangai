@@ -173,6 +173,14 @@ def main() -> None:
     print(f"Planilha salva em: {xlsx_path}")
     print(f"Total de casas (linhas de dados): {n}")
 
+    try:
+        from gerar_mapa import atualizar_site_mapa
+
+        js_mapa = atualizar_site_mapa(csv_path, raiz / "site")
+        print(f"Mapa do site atualizado: {js_mapa}")
+    except Exception as e:
+        print(f"Aviso: mapa do site não atualizado ({e})")
+
 
 if __name__ == "__main__":
     main()
