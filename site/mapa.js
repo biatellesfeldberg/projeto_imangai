@@ -8,15 +8,17 @@
 
   function criarIconePin() {
     return L.divIcon({
-      className: "marcador-wrap",
+      className: "pin-wrap",
       html:
-        '<div class="marcador" aria-hidden="true">' +
-        '<span class="marcador-nucleo"></span>' +
-        "</div>",
-      iconSize: [22, 22],
-      iconAnchor: [11, 11],
-      popupAnchor: [0, -14],
-      tooltipAnchor: [0, -12],
+        '<svg class="pin-svg" viewBox="0 0 28 36" width="28" height="36" aria-hidden="true">' +
+        '<ellipse class="pin-sombra" cx="14" cy="34" rx="5.5" ry="2" />' +
+        '<path class="pin-corpo" d="M14 2.5 C9 2.5 5.5 7 5.5 12.2 C5.5 18.5 14 31.5 14 31.5 C14 31.5 22.5 18.5 22.5 12.2 C22.5 7 19 2.5 14 2.5Z" />' +
+        '<circle class="pin-centro" cx="14" cy="11.5" r="3.2" />' +
+        "</svg>",
+      iconSize: [28, 36],
+      iconAnchor: [14, 36],
+      popupAnchor: [0, -34],
+      tooltipAnchor: [14, -32],
     });
   }
 
@@ -107,7 +109,7 @@
       marker.bindTooltip(conteudoTooltip(imovel), {
         className: "pin-tooltip",
         direction: "top",
-        offset: [0, -14],
+        offset: [0, -32],
         opacity: 1,
       });
 
@@ -115,13 +117,13 @@
 
       marker.on("mouseover", function () {
         const el = this.getElement();
-        if (el) el.classList.add("marcador--hover");
+        if (el) el.classList.add("pin--hover");
         this.openTooltip();
         this.setZIndexOffset(1000);
       });
       marker.on("mouseout", function () {
         const el = this.getElement();
-        if (el) el.classList.remove("marcador--hover");
+        if (el) el.classList.remove("pin--hover");
         this.closeTooltip();
         this.setZIndexOffset(0);
       });
