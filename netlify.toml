@@ -1,0 +1,5 @@
+# Opcional: deploy no Netlify (útil se o repositório continuar privado).
+# Site directory = pasta publicada; build regera dados.js a partir do CSV no repositório.
+[build]
+  command = "python gerar_mapa.py --entrada saida/casas_filtradas.csv --pasta-site site"
+  publish = "site"
