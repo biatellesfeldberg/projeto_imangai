@@ -80,6 +80,17 @@ def ler_imoveis_do_csv(caminho_csv: Path) -> list[dict]:
     return imoveis
 
 
+def atualizar_versao_cache(pasta_site: Path) -> str:
+    """
+    Grava site/versao.txt — o index.html usa esse valor para forçar
+    o navegador (incluindo celular) a baixar CSS/JS atualizados.
+    """
+    versao = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d%H%M%S")
+    pasta_site.mkdir(parents=True, exist_ok=True)
+    (pasta_site / "versao.txt").write_text(versao + "\n", encoding="utf-8")
+    return versao
+
+
 def atualizar_site_mapa(
     caminho_csv: Path,
     pasta_site: Path | None = None,
@@ -107,6 +118,7 @@ def atualizar_site_mapa(
         f"window.IMOVEIS_DATA = {json.dumps(payload, ensure_ascii=False, indent=2)};\n"
     )
     saida_js.write_text(conteudo, encoding="utf-8")
+    atualizar_versao_cache(pasta)
     return saida_js
 
 
@@ -128,9 +140,12 @@ def main() -> None:
     args = ap.parse_args()
 
     caminho_csv = Path(args.entrada)
-    saida = atualizar_site_mapa(caminho_csv, Path(args.pasta_site))
+    pasta_site = Path(args.pasta_site)
+    saida = atualizar_site_mapa(caminho_csv, pasta_site)
     imoveis = ler_imoveis_do_csv(caminho_csv)
+    versao = (pasta_site / "versao.txt").read_text(encoding="utf-8").strip()
     print(f"Mapa atualizado: {saida}")
+    print(f"Versão do cache (site): {versao}")
     print(f"Imóveis no mapa: {len(imoveis)}")
     print(f"Abra no navegador: {(Path(args.pasta_site) / 'index.html').resolve()}")
 

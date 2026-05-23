@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Mapa de casas — Zona Leste SP</title>
   <link
     rel="stylesheet"
@@ -10,7 +13,6 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="estilo.css" />
 </head>
 <body>
   <header class="cabecalho">
@@ -32,7 +34,49 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
-  <script src="dados.js"></script>
-  <script src="mapa.js"></script>
+  <script>
+    (function () {
+      "use strict";
+
+      function carregarCss(href) {
+        var link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href;
+        document.head.appendChild(link);
+      }
+
+      function carregarScript(src) {
+        return new Promise(function (resolve, reject) {
+          var s = document.createElement("script");
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = function () {
+            reject(new Error("Falha ao carregar: " + src));
+          };
+          document.body.appendChild(s);
+        });
+      }
+
+      fetch("versao.txt?_=" + Date.now(), { cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("versao.txt");
+          return r.text();
+        })
+        .then(function (texto) {
+          var v = (texto || "").trim() || String(Date.now());
+          var q = "?v=" + encodeURIComponent(v);
+          carregarCss("estilo.css" + q);
+          return carregarScript("dados.js" + q).then(function () {
+            return carregarScript("mapa.js" + q);
+          });
+        })
+        .catch(function () {
+          carregarCss("estilo.css");
+          return carregarScript("dados.js").then(function () {
+            return carregarScript("mapa.js");
+          });
+        });
+    })();
+  </script>
 </body>
 </html>

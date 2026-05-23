@@ -35,7 +35,8 @@ jobs:
           if [ -f saida/casas_filtradas.csv ]; then
             python gerar_mapa.py --entrada saida/casas_filtradas.csv --pasta-site site
           else
-            echo "CSV ausente; publicando site/ como está."
+            python -c "from pathlib import Path; from gerar_mapa import atualizar_versao_cache; atualizar_versao_cache(Path('site'))"
+            echo "CSV ausente; versão do cache atualizada."
           fi
 
       - uses: actions/configure-pages@v5

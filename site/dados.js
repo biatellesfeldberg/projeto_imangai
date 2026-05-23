@@ -1,6 +1,6 @@
 // Gerado automaticamente por gerar_mapa.py — não edite à mão.
 window.IMOVEIS_DATA = {
-  "atualizado_em": "2026-05-23T17:04:01-03:00",
+  "atualizado_em": "2026-05-23T17:29:16-03:00",
   "fonte_csv": "casas_filtradas.csv",
   "total": 30,
   "imoveis": [
