@@ -8,16 +8,15 @@
 
   function criarIconePin() {
     return L.divIcon({
-      className: "pin-moderno-wrap",
+      className: "marcador-wrap",
       html:
-        '<div class="pin-moderno" aria-hidden="true">' +
-        '<span class="pin-moderno-ponto"></span>' +
-        '<span class="pin-moderno-sombra"></span>' +
+        '<div class="marcador" aria-hidden="true">' +
+        '<span class="marcador-nucleo"></span>' +
         "</div>",
-      iconSize: [40, 48],
-      iconAnchor: [20, 46],
-      popupAnchor: [0, -44],
-      tooltipAnchor: [20, -40],
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+      popupAnchor: [0, -14],
+      tooltipAnchor: [0, -12],
     });
   }
 
@@ -33,8 +32,10 @@
     const quando = dados.atualizado_em
       ? new Date(dados.atualizado_em).toLocaleString("pt-BR")
       : "—";
+    const rotuloImoveis =
+      dados.total === 1 ? "1 imóvel no mapa" : `${dados.total} imóveis no mapa`;
     el.innerHTML =
-      `<span class="meta-total">${dados.total} imóvel${dados.total === 1 ? "" : "is"} no mapa</span>` +
+      `<span class="meta-total">${escHtml(rotuloImoveis)}</span>` +
       `<span class="meta-data">Atualizado: ${escHtml(quando)}</span>`;
   }
 
@@ -106,7 +107,7 @@
       marker.bindTooltip(conteudoTooltip(imovel), {
         className: "pin-tooltip",
         direction: "top",
-        offset: [0, -36],
+        offset: [0, -14],
         opacity: 1,
       });
 
@@ -114,13 +115,13 @@
 
       marker.on("mouseover", function () {
         const el = this.getElement();
-        if (el) el.classList.add("pin-moderno--hover");
+        if (el) el.classList.add("marcador--hover");
         this.openTooltip();
         this.setZIndexOffset(1000);
       });
       marker.on("mouseout", function () {
         const el = this.getElement();
-        if (el) el.classList.remove("pin-moderno--hover");
+        if (el) el.classList.remove("marcador--hover");
         this.closeTooltip();
         this.setZIndexOffset(0);
       });
