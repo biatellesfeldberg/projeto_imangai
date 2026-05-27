@@ -163,6 +163,33 @@ def _normalizar_vertices(
     return out
 
 
+def _casco_convexo_2d(pontos: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    """
+    Casco convexo 2D (Monotonic Chain).
+    Retorna vértices em sentido anti-horário sem repetir o primeiro no fim.
+    """
+    unicos = sorted(set((float(x), float(y)) for x, y in pontos))
+    if len(unicos) <= 2:
+        return unicos
+
+    def cruz(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    inferior: list[tuple[float, float]] = []
+    for p in unicos:
+        while len(inferior) >= 2 and cruz(inferior[-2], inferior[-1], p) <= 0:
+            inferior.pop()
+        inferior.append(p)
+
+    superior: list[tuple[float, float]] = []
+    for p in reversed(unicos):
+        while len(superior) >= 2 and cruz(superior[-2], superior[-1], p) <= 0:
+            superior.pop()
+        superior.append(p)
+
+    return inferior[:-1] + superior[:-1]
+
+
 def normalizado_para_latlng(
     x_norm: float, y_norm: float, bbox: BoundingBox
 ) -> tuple[float, float]:
@@ -278,6 +305,40 @@ class FiltroRegioes:
             n = len(r.poligono.vertices_normalizados)
             linhas.append(f"  - {r.id_regiao} | {r.cor_marcador} | {r.arquivo_origem} | {n} vértices")
         return "\n".join(linhas)
+
+    def consolidar_por_imagem_casco_convexo(self) -> FiltroRegioes:
+        """
+        Consolida múltiplas regiões de cada imagem em um único polígono (casco convexo),
+        útil quando os traços foram detectados em partes fragmentadas.
+        """
+        agrupado: dict[str, list[RegiaoDetectada]] = {}
+        for reg in self.regioes:
+            agrupado.setdefault(reg.arquivo_origem, []).append(reg)
+
+        consolidadas: list[RegiaoDetectada] = []
+        for arq, regs in agrupado.items():
+            pontos: list[tuple[float, float]] = []
+            area_total = 0.0
+            cor = regs[0].cor_marcador
+            for r in regs:
+                pontos.extend(r.poligono.vertices_normalizados)
+                area_total += r.area_pixels
+
+            casco = _casco_convexo_2d(pontos)
+            if len(casco) < 3:
+                continue
+
+            consolidadas.append(
+                RegiaoDetectada(
+                    id_regiao=f"{Path(arq).stem}_hull",
+                    arquivo_origem=arq,
+                    cor_marcador=cor,
+                    poligono=PoligonoRegiao(vertices_normalizados=casco, vertices_latlng=[]),
+                    area_pixels=area_total,
+                )
+            )
+
+        return FiltroRegioes(consolidadas)
 
 
 def _escolher_cor_por_mascara(

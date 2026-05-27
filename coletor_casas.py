@@ -362,7 +362,7 @@ def aquecer_sessao_portais(sessao: Any, config: ConfigColeta) -> None:
 def montar_filtro(cfg: ConfigColeta, raiz_projeto: Path) -> FiltroRegioes:
     if cfg.regenerar_filtro_das_imagens or not cfg.filtro_json:
         pasta = raiz_projeto / cfg.pasta_regioes_interesse
-        filtro = extrair_regioes_da_pasta(pasta)
+        filtro = extrair_regioes_da_pasta(pasta).consolidar_por_imagem_casco_convexo()
     else:
         caminho = raiz_projeto / cfg.filtro_json
         filtro = FiltroRegioes.carregar_json(caminho)

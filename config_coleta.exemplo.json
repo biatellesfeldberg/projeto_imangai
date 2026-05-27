@@ -7,16 +7,16 @@
   },
   "bounding_boxes_por_imagem": {
     "WhatsApp Image 2026-05-08 at 09.38.22.jpeg": {
-      "sul": -23.518,
-      "oeste": -46.53,
-      "norte": -23.498,
-      "leste": -46.508
+      "sul": -23.571194015319023,
+      "oeste": -46.57510219843627,
+      "norte": -23.50320429592624,
+      "leste": -46.428162541202326
     },
     "WhatsApp Image 2026-05-08 at 09.38.22 (1).jpeg": {
-      "sul": -23.542,
-      "oeste": -46.472,
-      "norte": -23.522,
-      "leste": -46.452
+      "sul": -23.58408365064523,
+      "oeste": -46.55007001969619,
+      "norte": -23.487292103572297,
+      "leste": -46.47354694225066
     }
   },
   "arquivo_saida_csv": "saida/casas_filtradas.csv",
